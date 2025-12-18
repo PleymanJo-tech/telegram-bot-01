@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS todos (
     user_id INTEGER,
     text TEXT,
     completed BOOLEAN DEFAULT 0,
+    deleted BOOLEAN DEFAULT 0,           -- НОВОЕ ПОЛЕ: 1 = задача удалена
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 """)
@@ -30,7 +31,7 @@ conn.commit()
 
 # ================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==================
 def get_user_task_by_number(user_id, task_number):
-    """Получить реальный ID задачи по её номеру в списке пользователя"""
+    """Получить реальный ID задачи по её номеру в списке пользователя (включая удалённые)"""
     cursor.execute(
         "SELECT id FROM todos WHERE user_id=? ORDER BY id",
         (user_id,)
@@ -39,18 +40,38 @@ def get_user_task_by_number(user_id, task_number):
     
     if task_number < 1 or task_number > len(rows):
         return None
-    return rows[task_number - 1][0]  # Возвращаем реальный ID
+    return rows[task_number - 1][0]
+
+def get_all_user_tasks(user_id):
+    """Получить все задачи пользователя (включая удалённые)"""
+    cursor.execute(
+        "SELECT id, text, completed, deleted FROM todos WHERE user_id=? ORDER BY id",
+        (user_id,)
+    )
+    return cursor.fetchall()
+
+def get_active_user_tasks(user_id):
+    """Получить только активные задачи (не удалённые)"""
+    cursor.execute(
+        "SELECT id, text, completed FROM todos WHERE user_id=? AND deleted=0 ORDER BY id",
+        (user_id,)
+    )
+    return cursor.fetchall()
 
 # ================== КОМАНДЫ БОТА ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Привет! Я учебный todo-бот.\n"
-        "Команды:\n"
+        "👋 Привет! Я todo-бот с фиксированной нумерацией.\n\n"
+        "📌 **Особенности:**\n"
+        "• Номера задач НЕ меняются при удалении\n"
+        "• Удалённые задачи остаются в списке как '✅ УДАЛЕНО'\n"
+        "• Когда все задачи будут выполнены, используйте /clear_done\n\n"
+        "📋 **Команды:**\n"
         "/add <текст> - добавить задачу\n"
-        "/list - все задачи\n"
-        "/done <номер> - отметить задачу выполненной\n"
-        "/del <номер> - удалить задачу\n\n"
-        "⚠️ Все номера - из вашего списка (/list)"
+        "/list - список всех задач\n"
+        "/done <номер> - отметить выполненной\n"
+        "/del <номер> - 'удалить' задачу (оставить в списке)\n"
+        "/clear_done - очистить ВЕСЬ список (только если все задачи выполнены или удалены)"
     )
 
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -64,23 +85,37 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         (update.effective_user.id, text)
     )
     conn.commit()
-    await update.message.reply_text("✅ Задача добавлена")
+    
+    # Получаем номер новой задачи
+    tasks = get_all_user_tasks(update.effective_user.id)
+    task_number = len(tasks)
+    
+    await update.message.reply_text(f"✅ Задача {task_number} добавлена:\n«{text}»")
 
 async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cursor.execute(
-        "SELECT id, text, completed FROM todos WHERE user_id=? ORDER BY id",
-        (update.effective_user.id,)
-    )
-    rows = cursor.fetchall()
+    tasks = get_all_user_tasks(update.effective_user.id)
 
-    if not rows:
+    if not tasks:
         await update.message.reply_text("📭 Список задач пуст")
         return
 
-    msg = "📋 Ваши задачи:\n"
-    for index, (task_id, text, completed) in enumerate(rows, start=1):
-        status = "✅" if completed else "⏳"
-        msg += f"{index}. {status} {text}\n"
+    msg = "📋 Ваши задачи (номера НЕ меняются!):\n"
+    all_completed_or_deleted = True
+    
+    for index, (task_id, text, completed, deleted) in enumerate(tasks, start=1):
+        if deleted:
+            status = "🗑️ УДАЛЕНО"
+            msg += f"{index}. {status}\n"
+        elif completed:
+            status = "✅ ВЫПОЛНЕНО"
+            msg += f"{index}. {status} ~~{text}~~\n"
+        else:
+            status = "⏳ АКТИВНА"
+            msg += f"{index}. {status} {text}\n"
+            all_completed_or_deleted = False
+    
+    if all_completed_or_deleted and tasks:
+        msg += "\n🎉 Все задачи завершены! Можно очистить список: /clear_done"
     
     await update.message.reply_text(msg)
 
@@ -95,11 +130,19 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Номер задачи должен быть числом")
         return
 
-    # Получаем реальный ID по номеру в списке пользователя
     real_task_id = get_user_task_by_number(update.effective_user.id, task_number)
     
     if not real_task_id:
         await update.message.reply_text(f"❌ Задачи с номером {task_number} не существует")
+        return
+    
+    # Проверяем, не удалена ли уже задача
+    cursor.execute(
+        "SELECT deleted FROM todos WHERE id=?",
+        (real_task_id,)
+    )
+    if cursor.fetchone()[0] == 1:
+        await update.message.reply_text(f"ℹ️ Задача {task_number} уже удалена")
         return
 
     cursor.execute(
@@ -108,14 +151,14 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     conn.commit()
     
-    # Получаем текст задачи для подтверждения
-    cursor.execute(
-        "SELECT text FROM todos WHERE id=?",
-        (real_task_id,)
-    )
+    cursor.execute("SELECT text FROM todos WHERE id=?", (real_task_id,))
     task_text = cursor.fetchone()[0]
     
-    await update.message.reply_text(f"✅ Задача {task_number} выполнена:\n«{task_text}»")
+    await update.message.reply_text(
+        f"✅ Задача {task_number} выполнена!\n"
+        f"«{task_text}»\n\n"
+        f"🏆 Отличная работа!"
+    )
 
 async def delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -128,27 +171,76 @@ async def delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Номер задачи должен быть числом")
         return
 
-    # Получаем реальный ID по номеру в списке пользователя
     real_task_id = get_user_task_by_number(update.effective_user.id, task_number)
     
     if not real_task_id:
         await update.message.reply_text(f"❌ Задачи с номером {task_number} не существует")
         return
-
-    # Получаем текст перед удалением
+    
+    # Получаем статус задачи
     cursor.execute(
-        "SELECT text FROM todos WHERE id=? AND user_id=?",
-        (real_task_id, update.effective_user.id)
+        "SELECT text, completed FROM todos WHERE id=?",
+        (real_task_id,)
     )
-    task_text = cursor.fetchone()[0]
+    task_text, completed = cursor.fetchone()
+    
+    if completed:
+        praise = "🎉 И она уже была выполнена! Двойная победа!"
+    else:
+        praise = "🔥 Бывает, не все планы реализуются. Главное - движение!"
 
+    # "Удаляем" задачу (помечаем deleted=1)
     cursor.execute(
-        "DELETE FROM todos WHERE id=? AND user_id=?",
+        "UPDATE todos SET deleted=1 WHERE id=? AND user_id=?",
         (real_task_id, update.effective_user.id)
     )
     conn.commit()
     
-    await update.message.reply_text(f"🗑 Задача {task_number} удалена:\n«{task_text}»")
+    await update.message.reply_text(
+        f"🗑️ Задача {task_number} удалена:\n"
+        f"«{task_text}»\n\n"
+        f"{praise}\n\n"
+        f"💡 Место {task_number} в списке останется пустым."
+    )
+
+async def clear_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Удаляет ВЕСЬ список, если все задачи выполнены или удалены"""
+    tasks = get_all_user_tasks(update.effective_user.id)
+    
+    if not tasks:
+        await update.message.reply_text("📭 Список и так пуст!")
+        return
+    
+    # Проверяем, все ли задачи завершены (completed=1 или deleted=1)
+    all_done = all(task[2] == 1 or task[3] == 1 for task in tasks)
+    
+    if not all_done:
+        await update.message.reply_text(
+            "❌ Нельзя очистить список!\n"
+            "Ещё есть активные задачи. Сначала выполните или удалите их все.\n"
+            "Проверьте: /list"
+        )
+        return
+    
+    # Подсчитываем статистику
+    completed_count = sum(1 for task in tasks if task[2] == 1)
+    deleted_count = sum(1 for task in tasks if task[3] == 1)
+    
+    # Удаляем ВСЕ задачи пользователя
+    cursor.execute(
+        "DELETE FROM todos WHERE user_id=?",
+        (update.effective_user.id,)
+    )
+    conn.commit()
+    
+    await update.message.reply_text(
+        f"🧹 Весь список очищен!\n\n"
+        f"📊 Статистика этого списка:\n"
+        f"• Выполнено задач: {completed_count}\n"
+        f"• Отменено задач: {deleted_count}\n"
+        f"• Всего пунктов: {len(tasks)}\n\n"
+        f"🎯 Чистый лист! Можно начинать новый список: /add <задача>"
+    )
 
 # ================== ЗАПУСК БОТА ==================
 def main():
@@ -159,6 +251,7 @@ def main():
     app.add_handler(CommandHandler("list", list_tasks))
     app.add_handler(CommandHandler("done", done))
     app.add_handler(CommandHandler("del", delete))
+    app.add_handler(CommandHandler("clear_done", clear_done))
 
     print("🤖 Бот запускается...")
     app.run_polling()
