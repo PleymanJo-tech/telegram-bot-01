@@ -1,5 +1,3 @@
-# bot.py - основной файл вашего бота
-
 import sqlite3
 import os
 from dotenv import load_dotenv
@@ -10,17 +8,15 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# ================== БЕЗОПАСНАЯ ЗАГРУЗКА ТОКЕНА ==================
-load_dotenv()  # Загружает переменные из файла .env
-TOKEN = os.getenv("TELEGRAM_TOKEN")  # Токен теперь берется из переменной окружения
-
+# Загрузка токена
+load_dotenv()
+TOKEN = os.getenv("TELEGRAM_TOKEN")
 if not TOKEN:
-    raise ValueError("ОШИБКА: Токен не найден! Создайте файл .env с TELEGRAM_TOKEN=ваш_токен")
+    raise ValueError("Токен не найден в .env файле!")
 
-# ================== БАЗА ДАННЫХ ==================
+# База данных
 conn = sqlite3.connect("todo.db", check_same_thread=False)
 cursor = conn.cursor()
-
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS todos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,10 +34,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 Привет! Я учебный todo-бот.\n"
         "Команды:\n"
         "/add <текст> - добавить задачу\n"
-        "/list - все задачи\n"
-        "/active - активные задачи\n"
-        "/done <id> - отметить выполненной\n"
-        "/del <id> - удалить задачу"
+        "/list - все задачи с вашей нумерацией\n"
+        "/done <id> - отметить выполненной (используйте ID из /list)\n"
+        "/del <id> - удалить задачу (используйте ID из /list)"
     )
 
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -68,15 +63,19 @@ async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📭 Список задач пуст")
         return
 
-    msg = "📋 Ваши задачи:\n"
-    for task_id, text, completed in rows:
+    msg = "📋 Ваши задачи (цифра слева - ваш номер для команд):\n"
+    # Ключевое изменение: enumerate создает локальную нумерацию 1,2,3...
+    for index, (task_id, text, completed) in enumerate(rows, start=1):
         status = "✅" if completed else "⏳"
-        msg += f"{task_id}. {status} {text}\n"
+        msg += f"{index}. {status} {text}\n"
+        msg += f"   ID для команд: {task_id}\n\n"
+    
+    msg += "💡 Используйте ID из строки выше для /done и /del"
     await update.message.reply_text(msg)
 
 async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Использование: /done 1")
+        await update.message.reply_text("Использование: /done <ID>\nПосмотреть ID задач: /list")
         return
 
     task_id = context.args[0]
@@ -85,20 +84,44 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         (task_id, update.effective_user.id)
     )
     conn.commit()
-    await update.message.reply_text(f"✅ Задача {task_id} выполнена!")
+    
+    # Получаем текст задачи для подтверждения
+    cursor.execute(
+        "SELECT text FROM todos WHERE id=?",
+        (task_id,)
+    )
+    task = cursor.fetchone()
+    
+    if task:
+        await update.message.reply_text(f"✅ Задача выполнена:\n«{task[0]}»")
+    else:
+        await update.message.reply_text("❌ Задача не найдена. Проверьте ID через /list")
 
 async def delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Использование: /del 1")
+        await update.message.reply_text("Использование: /del <ID>\nПосмотреть ID задач: /list")
         return
 
     task_id = context.args[0]
+    
+    # Сначала получаем текст задачи
+    cursor.execute(
+        "SELECT text FROM todos WHERE id=? AND user_id=?",
+        (task_id, update.effective_user.id)
+    )
+    task = cursor.fetchone()
+    
+    if not task:
+        await update.message.reply_text("❌ Задача не найдена. Проверьте ID через /list")
+        return
+
+    # Удаляем задачу
     cursor.execute(
         "DELETE FROM todos WHERE id=? AND user_id=?",
         (task_id, update.effective_user.id)
     )
     conn.commit()
-    await update.message.reply_text(f"🗑 Задача {task_id} удалена")
+    await update.message.reply_text(f"🗑 Задача удалена:\n«{task[0]}»")
 
 # ================== ЗАПУСК БОТА ==================
 def main():
