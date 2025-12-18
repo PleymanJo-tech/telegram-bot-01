@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS todos (
 """)
 conn.commit()
 
-# ================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==================
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ 
 def get_user_task_by_number(user_id, task_number):
     """Получить реальный ID задачи по её номеру в списке пользователя (включая удалённые)"""
     cursor.execute(
@@ -58,10 +58,10 @@ def get_active_user_tasks(user_id):
     )
     return cursor.fetchall()
 
-# ================== КОМАНДЫ БОТА ==================
+# КОМАНДЫ БОТА 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Привет! Я todo-бот с фиксированной нумерацией.\n\n"
+        "👋 Привет! Я todo-бот, учебный проект Леонида .\n\n"
         "📌 **Особенности:**\n"
         "• Номера задач НЕ меняются при удалении\n"
         "• Удалённые задачи остаются в списке как '✅ УДАЛЕНО'\n"
@@ -70,14 +70,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/add <текст> - добавить задачу\n"
         "/list - список всех задач\n"
         "/done <номер> - отметить выполненной\n"
-        "/del <номер> - 'удалить' задачу (оставить в списке)\n"
+        "/del <номер> - 'закрыть' задачу (оставить в списке)\n"
         "/clear_done - очистить ВЕСЬ список (только если все задачи выполнены или удалены)"
     )
 
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = " ".join(context.args)
     if not text:
-        await update.message.reply_text("Использование: /add купить хлеб")
+        await update.message.reply_text("Пример: /add купить хлеб")
         return
 
     cursor.execute(
@@ -86,7 +86,6 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     conn.commit()
     
-    # Получаем номер новой задачи
     tasks = get_all_user_tasks(update.effective_user.id)
     task_number = len(tasks)
     
@@ -121,7 +120,7 @@ async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Использование: /done 1")
+        await update.message.reply_text("Пример: /done 1")
         return
 
     try:
@@ -162,7 +161,7 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Использование: /del 1")
+        await update.message.reply_text("Пример: /del 1")
         return
 
     try:
@@ -189,7 +188,7 @@ async def delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         praise = "🔥 Бывает, не все планы реализуются. Главное - движение!"
 
-    # "Удаляем" задачу (помечаем deleted=1)
+    
     cursor.execute(
         "UPDATE todos SET deleted=1 WHERE id=? AND user_id=?",
         (real_task_id, update.effective_user.id)
@@ -211,7 +210,7 @@ async def clear_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📭 Список и так пуст!")
         return
     
-    # Проверяем, все ли задачи завершены (completed=1 или deleted=1)
+    
     all_done = all(task[2] == 1 or task[3] == 1 for task in tasks)
     
     if not all_done:
@@ -222,11 +221,11 @@ async def clear_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Подсчитываем статистику
+    
     completed_count = sum(1 for task in tasks if task[2] == 1)
     deleted_count = sum(1 for task in tasks if task[3] == 1)
     
-    # Удаляем ВСЕ задачи пользователя
+    
     cursor.execute(
         "DELETE FROM todos WHERE user_id=?",
         (update.effective_user.id,)
@@ -242,7 +241,7 @@ async def clear_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🎯 Чистый лист! Можно начинать новый список: /add <задача>"
     )
 
-# ================== ЗАПУСК БОТА ==================
+
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
