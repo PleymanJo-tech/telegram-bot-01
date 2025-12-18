@@ -28,15 +28,29 @@ CREATE TABLE IF NOT EXISTS todos (
 """)
 conn.commit()
 
+# ================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==================
+def get_user_task_by_number(user_id, task_number):
+    """Получить реальный ID задачи по её номеру в списке пользователя"""
+    cursor.execute(
+        "SELECT id FROM todos WHERE user_id=? ORDER BY id",
+        (user_id,)
+    )
+    rows = cursor.fetchall()
+    
+    if task_number < 1 or task_number > len(rows):
+        return None
+    return rows[task_number - 1][0]  # Возвращаем реальный ID
+
 # ================== КОМАНДЫ БОТА ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Привет! Я учебный todo-бот.\n"
         "Команды:\n"
         "/add <текст> - добавить задачу\n"
-        "/list - все задачи с вашей нумерацией\n"
-        "/done <id> - отметить выполненной (используйте ID из /list)\n"
-        "/del <id> - удалить задачу (используйте ID из /list)"
+        "/list - все задачи\n"
+        "/done <номер> - отметить задачу выполненной\n"
+        "/del <номер> - удалить задачу\n\n"
+        "⚠️ Все номера - из вашего списка (/list)"
     )
 
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -63,65 +77,78 @@ async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📭 Список задач пуст")
         return
 
-    msg = "📋 Ваши задачи (цифра слева - ваш номер для команд):\n"
-    # Ключевое изменение: enumerate создает локальную нумерацию 1,2,3...
+    msg = "📋 Ваши задачи:\n"
     for index, (task_id, text, completed) in enumerate(rows, start=1):
         status = "✅" if completed else "⏳"
         msg += f"{index}. {status} {text}\n"
-        msg += f"   ID для команд: {task_id}\n\n"
     
-    msg += "💡 Используйте ID из строки выше для /done и /del"
     await update.message.reply_text(msg)
 
 async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Использование: /done <ID>\nПосмотреть ID задач: /list")
+        await update.message.reply_text("Использование: /done 1")
         return
 
-    task_id = context.args[0]
+    try:
+        task_number = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ Номер задачи должен быть числом")
+        return
+
+    # Получаем реальный ID по номеру в списке пользователя
+    real_task_id = get_user_task_by_number(update.effective_user.id, task_number)
+    
+    if not real_task_id:
+        await update.message.reply_text(f"❌ Задачи с номером {task_number} не существует")
+        return
+
     cursor.execute(
         "UPDATE todos SET completed=1 WHERE id=? AND user_id=?",
-        (task_id, update.effective_user.id)
+        (real_task_id, update.effective_user.id)
     )
     conn.commit()
     
     # Получаем текст задачи для подтверждения
     cursor.execute(
         "SELECT text FROM todos WHERE id=?",
-        (task_id,)
+        (real_task_id,)
     )
-    task = cursor.fetchone()
+    task_text = cursor.fetchone()[0]
     
-    if task:
-        await update.message.reply_text(f"✅ Задача выполнена:\n«{task[0]}»")
-    else:
-        await update.message.reply_text("❌ Задача не найдена. Проверьте ID через /list")
+    await update.message.reply_text(f"✅ Задача {task_number} выполнена:\n«{task_text}»")
 
 async def delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Использование: /del <ID>\nПосмотреть ID задач: /list")
+        await update.message.reply_text("Использование: /del 1")
         return
 
-    task_id = context.args[0]
+    try:
+        task_number = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ Номер задачи должен быть числом")
+        return
+
+    # Получаем реальный ID по номеру в списке пользователя
+    real_task_id = get_user_task_by_number(update.effective_user.id, task_number)
     
-    # Сначала получаем текст задачи
+    if not real_task_id:
+        await update.message.reply_text(f"❌ Задачи с номером {task_number} не существует")
+        return
+
+    # Получаем текст перед удалением
     cursor.execute(
         "SELECT text FROM todos WHERE id=? AND user_id=?",
-        (task_id, update.effective_user.id)
+        (real_task_id, update.effective_user.id)
     )
-    task = cursor.fetchone()
-    
-    if not task:
-        await update.message.reply_text("❌ Задача не найдена. Проверьте ID через /list")
-        return
+    task_text = cursor.fetchone()[0]
 
-    # Удаляем задачу
     cursor.execute(
         "DELETE FROM todos WHERE id=? AND user_id=?",
-        (task_id, update.effective_user.id)
+        (real_task_id, update.effective_user.id)
     )
     conn.commit()
-    await update.message.reply_text(f"🗑 Задача удалена:\n«{task[0]}»")
+    
+    await update.message.reply_text(f"🗑 Задача {task_number} удалена:\n«{task_text}»")
 
 # ================== ЗАПУСК БОТА ==================
 def main():
